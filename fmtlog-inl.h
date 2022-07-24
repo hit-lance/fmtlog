@@ -23,8 +23,10 @@ SOFTWARE.
 */
 #include <ios>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #include "fmtlog.h"
 
@@ -109,7 +111,7 @@ class fmtlogDetailT {
         "90919293949596979899";
   };
 
-  fmtlogDetailT() : flushDelay(3000000000) {
+  fmtlogDetailT() {
     args.reserve(4096);
     args.resize(parttenArgSize);
 
@@ -119,13 +121,13 @@ class fmtlogDetailT {
     setHeaderPattern("{HMSf} {s:<16} {l}[{t:<6}] ");
     logInfos.reserve(32);
     bgLogInfos.reserve(128);
-    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::DBG, fmt::string_view());
-    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::INF, fmt::string_view());
-    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::WRN, fmt::string_view());
-    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::ERR, fmt::string_view());
+    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::DBG, nullptr, fmt::string_view());
+    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::INF, nullptr, fmt::string_view());
+    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::WRN, nullptr, fmt::string_view());
+    bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::ERR, nullptr, fmt::string_view());
     threadBuffers.reserve(8);
     bgThreadBuffers.reserve(8);
-    memset(membuf.data(), 0, membuf.capacity());
+    // memset(membuf.data(), 0, membuf.capacity());
   }
 
   ~fmtlogDetailT() {
@@ -191,9 +193,9 @@ class fmtlogDetailT {
 
   struct StaticLogInfo {
     // Constructor
-    constexpr StaticLogInfo(fmtlog::FormatToFn fn, const char* loc, fmtlog::LogLevel level, fmt::string_view fmtString,
-                            FILE* fp)
-        : formatToFn(fn), formatString(fmtString), location(loc), logLevel(level), fp(fp), argIdx(-1) {}
+    constexpr StaticLogInfo(fmtlog::FormatToFn fn, const char* loc, fmtlog::LogLevel level, Logger* logger,
+                            fmt::string_view fmtString)
+        : formatToFn(fn), formatString(fmtString), location(loc), logLevel(level), logger(logger), argIdx(-1) {}
 
     void processLocation() {
       size_t size = strlen(location);
@@ -217,13 +219,15 @@ class fmtlogDetailT {
 
     inline fmt::string_view getLocation() { return fmt::string_view(location, endPos); }
 
+    inline Logger* getLogger() { return logger; }
+
     fmtlog::FormatToFn formatToFn;
     fmt::string_view formatString;
     const char* location;
     uint8_t basePos;
     uint8_t endPos;
     fmtlog::LogLevel logLevel;
-    FILE* fp;
+    Logger* logger;
     int argIdx;
   };
 
@@ -232,11 +236,8 @@ class fmtlogDetailT {
   fmt::string_view headerPattern;
   bool shouldDeallocateHeader = false;
   FILE* outputFp = nullptr;
-  bool manageFp = false;
-  size_t fpos = 0;  // file position of membuf, used only when manageFp == true
-  int64_t flushDelay;
-  int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
-  uint32_t flushBufSize = 8 * 1024;
+  std::unordered_map<std::string, std::unique_ptr<Logger>> loggerCollection;
+
   fmtlog::LogLevel flushLogLevel = fmtlog::OFF;
   std::mutex bufferMutex;
   std::vector<fmtlog::ThreadBuffer*> threadBuffers;
@@ -322,24 +323,9 @@ class fmtlogDetailT {
     value_ = fmt::detail::arg_mapper<fmtlog::Context>().map(arg);
   }
 
-  void flushLogFile() {
-    if (outputFp) {
-      fwrite(membuf.data(), 1, membuf.size(), outputFp);
-      if (!manageFp)
-        fflush(outputFp);
-      else
-        fpos += membuf.size();
-    }
-    membuf.clear();
-    nextFlushTime = (std::numeric_limits<int64_t>::max)();
-  }
+  void flushLogFile() {}
 
-  void closeLogFile() {
-    if (membuf.size()) flushLogFile();
-    if (manageFp) fclose(outputFp);
-    outputFp = nullptr;
-    manageFp = false;
-  }
+  void closeLogFile() {}
 
   void startPollingThread(int64_t pollInterval) {
     stopPollingThread();
@@ -394,24 +380,28 @@ class fmtlogDetailT {
     setArgVal<15>(info.getLocation());
     logLevel = (const char*)"DBG INF WRN ERR OFF" + (info.logLevel << 2);
 
-    size_t headerPos = membuf.size();
-    fmtlog::vformat_to(membuf, headerPattern, fmt::basic_format_args(args.data(), parttenArgSize));
-    size_t bodyPos = membuf.size();
+    Logger* logger = info.getLogger();
+    size_t headerPos = logger->membuf.size();
+    fmtlog::vformat_to(logger->membuf, headerPattern, fmt::basic_format_args(args.data(), parttenArgSize));
+    size_t bodyPos = logger->membuf.size();
 
     if (info.formatToFn) {
-      info.formatToFn(info.formatString, data, membuf, info.argIdx, args);
+      info.formatToFn(info.formatString, data, logger->membuf, info.argIdx, args);
     } else {  // log once
-      membuf.append(fmt::string_view(data, end - data));
+      logger->membuf.append(fmt::string_view(data, end - data));
     }
 
     if (logCB && info.logLevel >= minCBLogLevel) {
       logCB(ts, info.logLevel, info.getLocation(), info.basePos, threadName,
-            fmt::string_view(membuf.data() + headerPos, membuf.size() - headerPos), bodyPos - headerPos,
-            fpos + headerPos);
+            fmt::string_view(logger->membuf.data() + headerPos, logger->membuf.size() - headerPos), bodyPos - headerPos,
+            logger->fpos + headerPos);
     }
-    membuf.push_back('\n');
-    if (membuf.size() >= flushBufSize || info.logLevel >= flushLogLevel) {
-      flushLogFile();
+    logger->membuf.push_back('\n');
+
+    fmt::print("{}", logger->membuf.data());
+
+    if (logger->membuf.size() >= logger->flushBufSize || info.logLevel >= flushLogLevel) {
+      logger->flush();
     }
   }
 
@@ -432,6 +422,7 @@ class fmtlogDetailT {
   void poll(bool forceFlush) {
     fmtlogWrapper<>::impl.tscns.calibrate();
     int64_t tsc = fmtlogWrapper<>::impl.tscns.rdtsc();
+
     if (logInfos.size()) {
       std::unique_lock<std::mutex> lock(logInfoMutex);
       for (auto& info : logInfos) {
@@ -477,17 +468,36 @@ class fmtlogDetailT {
       adjustHeap(0);
     }
 
-    if (membuf.size() == 0) return;
-    if (!manageFp || forceFlush) {
-      flushLogFile();
-      return;
+    for (auto const& c : loggerCollection) {
+      if (c.second->membuf.size() == 0) return;
+      if (!c.second->manageFp || forceFlush) {
+        c.second->flush();
+        continue;
+      }
+
+      int64_t now = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);
+      if (now > c.second->nextFlushTime) {
+        c.second->flush();
+      } else if (c.second->nextFlushTime == (std::numeric_limits<int64_t>::max)()) {
+        c.second->nextFlushTime = now + c.second->flushDelay;
+      }
     }
-    int64_t now = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);
-    if (now > nextFlushTime) {
-      flushLogFile();
-    } else if (nextFlushTime == (std::numeric_limits<int64_t>::max)()) {
-      nextFlushTime = now + flushDelay;
+  }
+
+  Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
+                    uint32_t flushBufSize = 8 * 1024) {
+    std::unique_lock<std::mutex> guard(bufferMutex);
+
+    auto const search = loggerCollection.find(filename);
+
+    if (search != loggerCollection.cend()) {
+      return (*search).second.get();
     }
+
+    auto emplace_result = loggerCollection.emplace(
+        filename, std::make_unique<Logger>(filename, truncate, manageFp, flushDelay, flushBufSize));
+
+    return (*emplace_result.first).second.get();
   }
 };
 
@@ -503,13 +513,13 @@ template <int _>
 fmtlogDetailT<> fmtlogDetailWrapper<_>::impl;
 
 template <int _>
-void fmtlogT<_>::registerLogInfo(uint32_t& logId, FormatToFn fn, const char* location, LogLevel level,
+void fmtlogT<_>::registerLogInfo(uint32_t& logId, FormatToFn fn, const char* location, LogLevel level, Logger* logger,
                                  fmt::string_view fmtString) FMT_NOEXCEPT {
   auto& d = fmtlogDetailWrapper<>::impl;
   std::lock_guard<std::mutex> lock(d.logInfoMutex);
   if (logId) return;
   logId = d.logInfos.size() + d.bgLogInfos.size();
-  d.logInfos.emplace_back(fn, location, level, fmtString);
+  d.logInfos.emplace_back(fn, location, level, logger, fmtString);
 }
 
 template <int _>
@@ -549,38 +559,19 @@ void fmtlogT<_>::preallocate() FMT_NOEXCEPT {
 }
 
 template <int _>
-void fmtlogT<_>::setLogFile(const char* filename, bool truncate) {
-  auto& d = fmtlogDetailWrapper<>::impl;
-  FILE* newFp = fopen(filename, truncate ? "w" : "a");
-  if (!newFp) {
-    std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
-    fmt::detail::throw_format_error(err.c_str());
-  }
-  setbuf(newFp, nullptr);
-  d.fpos = ftell(newFp);
+void fmtlogT<_>::setLogFile(const char* filename, bool truncate) {}
 
-  closeLogFile();
-  d.outputFp = newFp;
-  d.manageFp = true;
+template <int _>
+void fmtlogT<_>::setLogFile(FILE* fp, bool manageFp) {}
+
+template <int _>
+Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate, bool manageFp, int64_t flushDelay,
+                              uint32_t flushBufSize) {
+  return fmtlogDetailWrapper<>::impl.getLogger(filename, truncate, manageFp, flushDelay, flushBufSize);
 }
 
 template <int _>
-void fmtlogT<_>::setLogFile(FILE* fp, bool manageFp) {
-  auto& d = fmtlogDetailWrapper<>::impl;
-  closeLogFile();
-  if (manageFp) {
-    setbuf(fp, nullptr);
-    d.fpos = ftell(fp);
-  } else
-    d.fpos = 0;
-  d.outputFp = fp;
-  d.manageFp = manageFp;
-}
-
-template <int _>
-void fmtlogT<_>::setFlushDelay(int64_t ns) FMT_NOEXCEPT {
-  fmtlogDetailWrapper<>::impl.flushDelay = ns;
-}
+void fmtlogT<_>::setFlushDelay(int64_t ns) FMT_NOEXCEPT {}
 
 template <int _>
 void fmtlogT<_>::flushOn(LogLevel flushLogLevel) FMT_NOEXCEPT {
@@ -589,7 +580,6 @@ void fmtlogT<_>::flushOn(LogLevel flushLogLevel) FMT_NOEXCEPT {
 
 template <int _>
 void fmtlogT<_>::setFlushBufSize(uint32_t bytes) FMT_NOEXCEPT {
-  fmtlogDetailWrapper<>::impl.flushBufSize = bytes;
 }
 
 template <int _>

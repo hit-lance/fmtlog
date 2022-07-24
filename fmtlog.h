@@ -91,6 +91,50 @@ struct UnrefPtr<Arg*> : std::true_type {
 
 };  // namespace fmtlogdetail
 
+class Logger {
+  using MemoryBuffer = fmt::basic_memory_buffer<char, 10000>;
+
+ public:
+  Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
+         uint32_t flushBufSize = 8 * 1024)
+      : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
+    fp = fopen(filename, truncate ? "w" : "a");
+    if (!fp) {
+      std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
+      fmt::detail::throw_format_error(err.c_str());
+    }
+    memset(membuf.data(), 0, membuf.capacity());
+  }
+
+  void flush() {
+    if (fp) {
+      fwrite(membuf.data(), 1, membuf.size(), fp);
+      if (!manageFp)
+        fflush(fp);
+      else
+        fpos += membuf.size();
+    }
+    membuf.clear();
+    nextFlushTime = (std::numeric_limits<int64_t>::max)();
+  }
+
+  ~Logger() {
+    if (membuf.size()) flush();
+    if (manageFp) fclose(fp);
+  }
+
+  //  private:
+  std::string name;
+  bool manageFp;
+  int64_t flushDelay;
+  uint32_t flushBufSize;
+
+  FILE* fp;
+  MemoryBuffer membuf;
+  size_t fpos = 0;  // file position of membuf, used only when manageFp == true
+  int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
+};
+
 template <int __ = 0>
 class fmtlogT {
  public:
@@ -105,6 +149,9 @@ class fmtlogT {
   // Set an existing FILE* for logging, if manageFp is false fmtlog will not buffer log internally
   // and will not close the FILE*
   static void setLogFile(FILE* fp, bool manageFp = false);
+
+  static Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false,
+                           int64_t flushDelay = 3000000000, uint32_t flushBufSize = 8 * 1024);
 
   // Collect log msgs from all threads and write to log file
   // If forceFlush = true, internal file buffer is flushed
@@ -365,7 +412,7 @@ class fmtlogT {
   typedef const char* (*FormatToFn)(fmt::string_view format, const char* data, MemoryBuffer& out, int& argIdx,
                                     std::vector<fmt::basic_format_arg<Context>>& args);
 
-  static void registerLogInfo(uint32_t& logId, FormatToFn fn, const char* location, LogLevel level,
+  static void registerLogInfo(uint32_t& logId, FormatToFn fn, const char* location, LogLevel level, Logger* logger,
                               fmt::string_view fmtString) FMT_NOEXCEPT;
 
   static void vformat_to(MemoryBuffer& out, fmt::string_view fmt, fmt::format_args args);
@@ -631,12 +678,12 @@ class fmtlogT {
 
  public:
   template <typename... Args>
-  inline void log(uint32_t& logId, int64_t tsc, const char* location, LogLevel level,
+  inline void log(uint32_t& logId, int64_t tsc, const char* location, LogLevel level, Logger* logger,
                   fmt::format_string<typename fmtlogdetail::UnrefPtr<fmt::remove_cvref_t<Args>>::type...> format,
                   Args&&... args) FMT_NOEXCEPT {
     if (!logId) {
       auto unnamed_format = unNameFormat<false>(fmt::string_view(format), nullptr, args...);
-      registerLogInfo(logId, formatTo<Args...>, location, level, unnamed_format);
+      registerLogInfo(logId, formatTo<Args...>, location, level, logger, unnamed_format);
     }
     constexpr size_t num_cstring = fmt::detail::count<isCstring<Args>()...>();
     size_t cstringSizes[std::max(num_cstring, (size_t)1)];
@@ -716,24 +763,24 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
 #define __FMTLOG_S2(x) __FMTLOG_S1(x)
 #define __FMTLOG_LOCATION __FILE__ ":" __FMTLOG_S2(__LINE__)
 
-#define FMTLOG(level, format, ...)                                                                          \
-  do {                                                                                                      \
-    static uint32_t logId = 0;                                                                              \
-    if (!fmtlog::checkLogLevel(level)) break;                                                               \
-    fmtlogWrapper<>::impl.log(logId, fmtlogWrapper<>::impl.tscns.rdtsc(), __FMTLOG_LOCATION, level, format, \
-                              ##__VA_ARGS__);                                                               \
+#define FMTLOG(level, logger, format, ...)                                                                          \
+  do {                                                                                                              \
+    static uint32_t logId = 0;                                                                                      \
+    if (!fmtlog::checkLogLevel(level)) break;                                                                       \
+    fmtlogWrapper<>::impl.log(logId, fmtlogWrapper<>::impl.tscns.rdtsc(), __FMTLOG_LOCATION, level, logger, format, \
+                              ##__VA_ARGS__);                                                                       \
   } while (0)
 
-#define FMTLOG_LIMIT(min_interval, level, format, ...)                                      \
-  do {                                                                                      \
-    static uint32_t logId = 0;                                                              \
-    static int64_t limitNs = 0;                                                             \
-    if (!fmtlog::checkLogLevel(level)) break;                                               \
-    int64_t tsc = fmtlogWrapper<>::impl.tscns.rdtsc();                                      \
-    int64_t ns = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);                                   \
-    if (ns < limitNs) break;                                                                \
-    limitNs = ns + min_interval;                                                            \
-    fmtlogWrapper<>::impl.log(logId, tsc, __FMTLOG_LOCATION, level, format, ##__VA_ARGS__); \
+#define FMTLOG_LIMIT(min_interval, level, fp, format, ...)                                      \
+  do {                                                                                          \
+    static uint32_t logId = 0;                                                                  \
+    static int64_t limitNs = 0;                                                                 \
+    if (!fmtlog::checkLogLevel(level)) break;                                                   \
+    int64_t tsc = fmtlogWrapper<>::impl.tscns.rdtsc();                                          \
+    int64_t ns = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);                                       \
+    if (ns < limitNs) break;                                                                    \
+    limitNs = ns + min_interval;                                                                \
+    fmtlogWrapper<>::impl.log(logId, tsc, __FMTLOG_LOCATION, level, fp, format, ##__VA_ARGS__); \
   } while (0)
 
 #define FMTLOG_ONCE(level, format, ...)                                             \

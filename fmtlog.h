@@ -91,53 +91,57 @@ struct UnrefPtr<Arg*> : std::true_type {
 
 };  // namespace fmtlogdetail
 
-class Logger {
-  using MemoryBuffer = fmt::basic_memory_buffer<char, 10000>;
-
- public:
-  Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
-         uint32_t flushBufSize = 8 * 1024)
-      : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
-    fp = fopen(filename, truncate ? "w" : "a");
-    if (!fp) {
-      std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
-      fmt::detail::throw_format_error(err.c_str());
-    }
-    memset(membuf.data(), 0, membuf.capacity());
-  }
-
-  void flush() {
-    if (fp) {
-      fwrite(membuf.data(), 1, membuf.size(), fp);
-      if (!manageFp)
-        fflush(fp);
-      else
-        fpos += membuf.size();
-    }
-    membuf.clear();
-    nextFlushTime = (std::numeric_limits<int64_t>::max)();
-  }
-
-  ~Logger() {
-    if (membuf.size()) flush();
-    if (manageFp) fclose(fp);
-  }
-
-  //  private:
-  std::string name;
-  bool manageFp;
-  int64_t flushDelay;
-  uint32_t flushBufSize;
-
-  FILE* fp;
-  MemoryBuffer membuf;
-  size_t fpos = 0;  // file position of membuf, used only when manageFp == true
-  int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
-};
-
 template <int __ = 0>
 class fmtlogT {
  public:
+  using Context = fmt::format_context;
+  using MemoryBuffer = fmt::basic_memory_buffer<char, 10000>;
+
+  class Logger {
+    template <int ___>
+    friend class fmtlogDetailT;
+
+   public:
+    Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
+           uint32_t flushBufSize = 8 * 1024)
+        : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
+      fp = fopen(filename, truncate ? "w" : "a");
+      if (!fp) {
+        std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
+        fmt::detail::throw_format_error(err.c_str());
+      }
+      memset(membuf.data(), 0, membuf.capacity());
+    }
+
+    void flush() {
+      if (fp) {
+        fwrite(membuf.data(), 1, membuf.size(), fp);
+        if (!manageFp)
+          fflush(fp);
+        else
+          fpos += membuf.size();
+      }
+      membuf.clear();
+      nextFlushTime = (std::numeric_limits<int64_t>::max)();
+    }
+
+    ~Logger() {
+      if (membuf.size()) flush();
+      if (manageFp) fclose(fp);
+    }
+
+   private:
+    std::string name;
+    bool manageFp;
+    int64_t flushDelay;
+    uint32_t flushBufSize;
+
+    FILE* fp;
+    MemoryBuffer membuf;
+    size_t fpos = 0;  // file position of membuf, used only when manageFp == true
+    int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
+  };
+
   enum LogLevel : uint8_t { DBG = 0, INF, WRN, ERR, OFF };
 
   // Preallocate thread queue for current thread
@@ -407,8 +411,6 @@ class fmtlogT {
     currentLogLevel = INF;
   }
 
-  using Context = fmt::format_context;
-  using MemoryBuffer = fmt::basic_memory_buffer<char, 10000>;
   typedef const char* (*FormatToFn)(fmt::string_view format, const char* data, MemoryBuffer& out, int& argIdx,
                                     std::vector<fmt::basic_format_arg<Context>>& args);
 

@@ -193,7 +193,7 @@ class fmtlogDetailT {
 
   struct StaticLogInfo {
     // Constructor
-    constexpr StaticLogInfo(fmtlog::FormatToFn fn, const char* loc, fmtlog::LogLevel level, Logger* logger,
+    constexpr StaticLogInfo(fmtlog::FormatToFn fn, const char* loc, fmtlog::LogLevel level, fmtlog::Logger* logger,
                             fmt::string_view fmtString)
         : formatToFn(fn), formatString(fmtString), location(loc), logLevel(level), logger(logger), argIdx(-1) {}
 
@@ -219,7 +219,7 @@ class fmtlogDetailT {
 
     inline fmt::string_view getLocation() { return fmt::string_view(location, endPos); }
 
-    inline Logger* getLogger() { return logger; }
+    inline fmtlog::Logger* getLogger() { return logger; }
 
     fmtlog::FormatToFn formatToFn;
     fmt::string_view formatString;
@@ -227,7 +227,7 @@ class fmtlogDetailT {
     uint8_t basePos;
     uint8_t endPos;
     fmtlog::LogLevel logLevel;
-    Logger* logger;
+    fmtlog::Logger* logger;
     int argIdx;
   };
 
@@ -236,7 +236,7 @@ class fmtlogDetailT {
   fmt::string_view headerPattern;
   bool shouldDeallocateHeader = false;
   FILE* outputFp = nullptr;
-  std::unordered_map<std::string, std::unique_ptr<Logger>> loggerCollection;
+  std::unordered_map<std::string, std::unique_ptr<fmtlog::Logger>> loggerCollection;
 
   fmtlog::LogLevel flushLogLevel = fmtlog::OFF;
   std::mutex bufferMutex;
@@ -380,7 +380,7 @@ class fmtlogDetailT {
     setArgVal<15>(info.getLocation());
     logLevel = (const char*)"DBG INF WRN ERR OFF" + (info.logLevel << 2);
 
-    Logger* logger = info.getLogger();
+    fmtlog::Logger* logger = info.getLogger();
     size_t headerPos = logger->membuf.size();
     fmtlog::vformat_to(logger->membuf, headerPattern, fmt::basic_format_args(args.data(), parttenArgSize));
     size_t bodyPos = logger->membuf.size();
@@ -484,7 +484,7 @@ class fmtlogDetailT {
     }
   }
 
-  Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
+  fmtlog::Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
                     uint32_t flushBufSize = 8 * 1024) {
     std::unique_lock<std::mutex> guard(bufferMutex);
 
@@ -495,7 +495,7 @@ class fmtlogDetailT {
     }
 
     auto emplace_result = loggerCollection.emplace(
-        filename, std::make_unique<Logger>(filename, truncate, manageFp, flushDelay, flushBufSize));
+        filename, std::make_unique<fmtlog::Logger>(filename, truncate, manageFp, flushDelay, flushBufSize));
 
     return (*emplace_result.first).second.get();
   }
@@ -565,7 +565,7 @@ template <int _>
 void fmtlogT<_>::setLogFile(FILE* fp, bool manageFp) {}
 
 template <int _>
-Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate, bool manageFp, int64_t flushDelay,
+fmtlogT<_>::Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate, bool manageFp, int64_t flushDelay,
                               uint32_t flushBufSize) {
   return fmtlogDetailWrapper<>::impl.getLogger(filename, truncate, manageFp, flushDelay, flushBufSize);
 }

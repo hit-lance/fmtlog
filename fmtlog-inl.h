@@ -117,7 +117,6 @@ class fmtlogDetailT {
 
     fmtlogWrapper<>::impl.init();
     resetDate();
-    fmtlog::setLogFile(stdout);
     setHeaderPattern("{HMSf} {s:<16} {l}[{t:<6}] ");
     logInfos.reserve(32);
     bgLogInfos.reserve(128);
@@ -127,13 +126,11 @@ class fmtlogDetailT {
     bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::ERR, nullptr, fmt::string_view());
     threadBuffers.reserve(8);
     bgThreadBuffers.reserve(8);
-    // memset(membuf.data(), 0, membuf.capacity());
   }
 
   ~fmtlogDetailT() {
     stopPollingThread();
     poll(true);
-    closeLogFile();
   }
 
   void setHeaderPattern(const char* pattern) {
@@ -235,10 +232,14 @@ class fmtlogDetailT {
   int64_t midnightNs;
   fmt::string_view headerPattern;
   bool shouldDeallocateHeader = false;
-  FILE* outputFp = nullptr;
+
   std::unordered_map<std::string, std::unique_ptr<fmtlog::Logger>> loggerCollection;
 
+  int64_t flushDelay;
+  int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
+
   fmtlog::LogLevel flushLogLevel = fmtlog::OFF;
+
   std::mutex bufferMutex;
   std::vector<fmtlog::ThreadBuffer*> threadBuffers;
   struct HeapNode {
@@ -256,8 +257,6 @@ class fmtlogDetailT {
   fmtlog::LogLevel minCBLogLevel;
   fmtlog::LogQFullCBFn logQFullCB = fmtlogEmptyFun;
   void* logQFullCBArg = nullptr;
-
-  fmtlog::MemoryBuffer membuf;
 
   const static int parttenArgSize = 25;
   uint32_t reorderIdx[parttenArgSize];
@@ -323,9 +322,12 @@ class fmtlogDetailT {
     value_ = fmt::detail::arg_mapper<fmtlog::Context>().map(arg);
   }
 
-  void flushLogFile() {}
-
-  void closeLogFile() {}
+  void flushLogFile() {
+    for (auto const& lc : loggerCollection) {
+      lc.second->flush();
+    }
+    nextFlushTime = (std::numeric_limits<int64_t>::max)();
+  }
 
   void startPollingThread(int64_t pollInterval) {
     stopPollingThread();
@@ -381,7 +383,10 @@ class fmtlogDetailT {
     logLevel = (const char*)"DBG INF WRN ERR OFF" + (info.logLevel << 2);
 
     fmtlog::Logger* logger = info.getLogger();
-    size_t headerPos = logger->membuf.size();
+
+    // clear out existing buffer
+    logger->membuf.clear();
+
     fmtlog::vformat_to(logger->membuf, headerPattern, fmt::basic_format_args(args.data(), parttenArgSize));
     size_t bodyPos = logger->membuf.size();
 
@@ -393,14 +398,13 @@ class fmtlogDetailT {
 
     if (logCB && info.logLevel >= minCBLogLevel) {
       logCB(ts, info.logLevel, info.getLocation(), info.basePos, threadName,
-            fmt::string_view(logger->membuf.data() + headerPos, logger->membuf.size() - headerPos), bodyPos - headerPos,
-            logger->fpos + headerPos);
+            fmt::string_view(logger->membuf.data(), logger->membuf.size()), bodyPos, 0);
     }
+
     logger->membuf.push_back('\n');
+    logger->write();
 
-    // fmt::print("{}", logger->membuf.data());
-
-    if (logger->membuf.size() >= logger->flushBufSize || info.logLevel >= flushLogLevel) {
+    if (info.logLevel >= flushLogLevel) {
       logger->flush();
     }
   }
@@ -422,7 +426,6 @@ class fmtlogDetailT {
   void poll(bool forceFlush) {
     fmtlogWrapper<>::impl.tscns.calibrate();
     int64_t tsc = fmtlogWrapper<>::impl.tscns.rdtsc();
-
     if (logInfos.size()) {
       std::unique_lock<std::mutex> lock(logInfoMutex);
       for (auto& info : logInfos) {
@@ -468,24 +471,19 @@ class fmtlogDetailT {
       adjustHeap(0);
     }
 
-    for (auto const& c : loggerCollection) {
-      if (c.second->membuf.size() == 0) return;
-      if (!c.second->manageFp || forceFlush) {
-        c.second->flush();
-        continue;
-      }
-
-      int64_t now = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);
-      if (now > c.second->nextFlushTime) {
-        c.second->flush();
-      } else if (c.second->nextFlushTime == (std::numeric_limits<int64_t>::max)()) {
-        c.second->nextFlushTime = now + c.second->flushDelay;
-      }
+    if (forceFlush) {
+      flushLogFile();
+      return;
+    }
+    int64_t now = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);
+    if (now > nextFlushTime) {
+      flushLogFile();
+    } else if (nextFlushTime == (std::numeric_limits<int64_t>::max)()) {
+      nextFlushTime = now + flushDelay;
     }
   }
 
-  fmtlog::Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false,
-                            int64_t flushDelay = 3000000000, uint32_t flushBufSize = 8 * 1024) {
+  fmtlog::Logger* getLogger(const char* filename, bool truncate = false) {
     std::unique_lock<std::mutex> guard(bufferMutex);
 
     auto const search = loggerCollection.find(filename);
@@ -494,7 +492,7 @@ class fmtlogDetailT {
       return (*search).second.get();
     }
 
-    std::unique_ptr<fmtlog::Logger> logger{new fmtlog::Logger(filename, truncate, manageFp, flushDelay, flushBufSize)};
+    std::unique_ptr<fmtlog::Logger> logger{new fmtlog::Logger(filename, truncate)};
     auto emplace_result = loggerCollection.emplace(filename, std::move(logger));
 
     return (*emplace_result.first).second.get();
@@ -559,31 +557,18 @@ void fmtlogT<_>::preallocate() FMT_NOEXCEPT {
 }
 
 template <int _>
-void fmtlogT<_>::setLogFile(const char* filename, bool truncate) {}
-
-template <int _>
-void fmtlogT<_>::setLogFile(FILE* fp, bool manageFp) {}
-
-template <int _>
-fmtlogT<_>::Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate, bool manageFp, int64_t flushDelay,
-                                          uint32_t flushBufSize) {
-  return fmtlogDetailWrapper<>::impl.getLogger(filename, truncate, manageFp, flushDelay, flushBufSize);
+fmtlogT<_>::Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate) {
+  return fmtlogDetailWrapper<>::impl.getLogger(filename, truncate);
 }
 
 template <int _>
-void fmtlogT<_>::setFlushDelay(int64_t ns) FMT_NOEXCEPT {}
+void fmtlogT<_>::setFlushDelay(int64_t ns) FMT_NOEXCEPT {
+  fmtlogDetailWrapper<>::impl.flushDelay = ns;
+}
 
 template <int _>
 void fmtlogT<_>::flushOn(LogLevel flushLogLevel) FMT_NOEXCEPT {
   fmtlogDetailWrapper<>::impl.flushLogLevel = flushLogLevel;
-}
-
-template <int _>
-void fmtlogT<_>::setFlushBufSize(uint32_t bytes) FMT_NOEXCEPT {}
-
-template <int _>
-void fmtlogT<_>::closeLogFile() FMT_NOEXCEPT {
-  fmtlogDetailWrapper<>::impl.closeLogFile();
 }
 
 template <int _>

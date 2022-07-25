@@ -95,51 +95,38 @@ template <int __ = 0>
 class fmtlogT {
  public:
   using Context = fmt::format_context;
-  using MemoryBuffer = fmt::basic_memory_buffer<char, 10000>;
+  using MemoryBuffer = fmt::memory_buffer;
 
   class Logger {
     template <int ___>
     friend class fmtlogDetailT;
 
    public:
-    void flush() {
-      if (fp) {
-        fwrite(membuf.data(), 1, membuf.size(), fp);
-        if (!manageFp)
-          fflush(fp);
-        else
-          fpos += membuf.size();
+    void write() {
+      size_t const written = fwrite(membuf.data(), 1, membuf.size(), fp);
+      if (written < membuf.size()) {
+        std::string err = fmt::format("fwrite failed with error message errno: {}", strerror(errno));
+        fmt::detail::throw_format_error(err.c_str());
       }
-      membuf.clear();
-      nextFlushTime = (std::numeric_limits<int64_t>::max)();
     }
 
-    ~Logger() {
-      if (membuf.size()) flush();
-      if (manageFp) fclose(fp);
-    }
+    void flush() { fflush(fp); }
+
+    ~Logger() { fclose(fp); }
 
    private:
-    Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
-           uint32_t flushBufSize = 8 * 1024)
-        : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
+    Logger(const char* filename, bool truncate = false) : name(filename) {
       fp = fopen(filename, truncate ? "w" : "a");
       if (!fp) {
         std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
         fmt::detail::throw_format_error(err.c_str());
       }
-      memset(membuf.data(), 0, membuf.capacity());
     }
 
     std::string name;
-    bool manageFp;
-    int64_t flushDelay;
-    uint32_t flushBufSize;
 
     FILE* fp;
     MemoryBuffer membuf;
-    size_t fpos = 0;  // file position of membuf, used only when manageFp == true
-    int64_t nextFlushTime = (std::numeric_limits<int64_t>::max)();
   };
 
   enum LogLevel : uint8_t { DBG = 0, INF, WRN, ERR, OFF };
@@ -147,15 +134,7 @@ class fmtlogT {
   // Preallocate thread queue for current thread
   static void preallocate() FMT_NOEXCEPT;
 
-  // Set the file for logging
-  static void setLogFile(const char* filename, bool truncate = false);
-
-  // Set an existing FILE* for logging, if manageFp is false fmtlog will not buffer log internally
-  // and will not close the FILE*
-  static void setLogFile(FILE* fp, bool manageFp = false);
-
-  static Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false,
-                           int64_t flushDelay = 3000000000, uint32_t flushBufSize = 8 * 1024);
+  static Logger* getLogger(const char* filename, bool truncate = false);
 
   // Collect log msgs from all threads and write to log file
   // If forceFlush = true, internal file buffer is flushed
@@ -168,9 +147,6 @@ class fmtlogT {
 
   // If current msg has level >= flushLogLevel, flush will be triggered
   static void flushOn(LogLevel flushLogLevel) FMT_NOEXCEPT;
-
-  // If file buffer has more than specified bytes, flush will be triggered
-  static void setFlushBufSize(uint32_t bytes) FMT_NOEXCEPT;
 
   // callback signature user can register
   // ns: nanosecond timestamp
@@ -189,10 +165,6 @@ class fmtlogT {
 
   typedef void (*LogQFullCBFn)(void* userData);
   static void setLogQFullCB(LogQFullCBFn cb, void* userData) FMT_NOEXCEPT;
-
-  // Close the log file and subsequent msgs will not be written into the file,
-  // but callback function can still be used
-  static void closeLogFile() FMT_NOEXCEPT;
 
   // Set log header pattern with fmt named arguments
   static void setHeaderPattern(const char* pattern);

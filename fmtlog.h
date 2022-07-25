@@ -102,17 +102,6 @@ class fmtlogT {
     friend class fmtlogDetailT;
 
    public:
-    Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
-           uint32_t flushBufSize = 8 * 1024)
-        : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
-      fp = fopen(filename, truncate ? "w" : "a");
-      if (!fp) {
-        std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
-        fmt::detail::throw_format_error(err.c_str());
-      }
-      memset(membuf.data(), 0, membuf.capacity());
-    }
-
     void flush() {
       if (fp) {
         fwrite(membuf.data(), 1, membuf.size(), fp);
@@ -131,6 +120,17 @@ class fmtlogT {
     }
 
    private:
+    Logger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
+           uint32_t flushBufSize = 8 * 1024)
+        : name(filename), manageFp(manageFp), flushDelay(flushDelay), flushBufSize(flushBufSize) {
+      fp = fopen(filename, truncate ? "w" : "a");
+      if (!fp) {
+        std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
+        fmt::detail::throw_format_error(err.c_str());
+      }
+      memset(membuf.data(), 0, membuf.capacity());
+    }
+
     std::string name;
     bool manageFp;
     int64_t flushDelay;
@@ -792,27 +792,27 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
   } while (0)
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_DBG
-#define logd(format, ...) FMTLOG(fmtlog::DBG, format, ##__VA_ARGS__)
+#define logd(logger, format, ...) FMTLOG(logger, fmtlog::DBG, format, ##__VA_ARGS__)
 #define logdo(format, ...) FMTLOG_ONCE(fmtlog::DBG, format, ##__VA_ARGS__)
 #define logdl(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::DBG, format, ##__VA_ARGS__)
 #else
-#define logd(format, ...) (void)0
+#define logd(logger, format, ...) (void)0
 #define logdo(format, ...) (void)0
 #define logdl(min_interval, format, ...) (void)0
 #endif
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_INF
-#define logi(format, ...) FMTLOG(fmtlog::INF, format, ##__VA_ARGS__)
+#define logi(logger, format, ...) FMTLOG(fmtlog::INF, logger, format, ##__VA_ARGS__)
 #define logio(format, ...) FMTLOG_ONCE(fmtlog::INF, format, ##__VA_ARGS__)
 #define logil(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::INF, format, ##__VA_ARGS__)
 #else
-#define logi(format, ...) (void)0
+#define logi(logger, format, ...) (void)0
 #define logio(format, ...) (void)0
 #define logil(min_interval, format, ...) (void)0
 #endif
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_WRN
-#define logw(format, ...) FMTLOG(fmtlog::WRN, format, ##__VA_ARGS__)
+#define logw(logger, format, ...) FMTLOG(fmtlog::WRN, logger, format, ##__VA_ARGS__)
 #define logwo(format, ...) FMTLOG_ONCE(fmtlog::WRN, format, ##__VA_ARGS__)
 #define logwl(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::WRN, format, ##__VA_ARGS__)
 #else
@@ -822,11 +822,11 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
 #endif
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_ERR
-#define loge(format, ...) FMTLOG(fmtlog::ERR, format, ##__VA_ARGS__)
+#define loge(logger, format, ...) FMTLOG(fmtlog::ERR, logger, format, ##__VA_ARGS__)
 #define logeo(format, ...) FMTLOG_ONCE(fmtlog::ERR, format, ##__VA_ARGS__)
 #define logel(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::ERR, format, ##__VA_ARGS__)
 #else
-#define loge(format, ...) (void)0
+#define loge(logger, format, ...) (void)0
 #define logeo(format, ...) (void)0
 #define logel(min_interval, format, ...) (void)0
 #endif

@@ -398,7 +398,7 @@ class fmtlogDetailT {
     }
     logger->membuf.push_back('\n');
 
-    fmt::print("{}", logger->membuf.data());
+    // fmt::print("{}", logger->membuf.data());
 
     if (logger->membuf.size() >= logger->flushBufSize || info.logLevel >= flushLogLevel) {
       logger->flush();
@@ -484,8 +484,8 @@ class fmtlogDetailT {
     }
   }
 
-  fmtlog::Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false, int64_t flushDelay = 3000000000,
-                    uint32_t flushBufSize = 8 * 1024) {
+  fmtlog::Logger* getLogger(const char* filename, bool truncate = false, bool manageFp = false,
+                            int64_t flushDelay = 3000000000, uint32_t flushBufSize = 8 * 1024) {
     std::unique_lock<std::mutex> guard(bufferMutex);
 
     auto const search = loggerCollection.find(filename);
@@ -494,8 +494,8 @@ class fmtlogDetailT {
       return (*search).second.get();
     }
 
-    auto emplace_result = loggerCollection.emplace(
-        filename, std::make_unique<fmtlog::Logger>(filename, truncate, manageFp, flushDelay, flushBufSize));
+    std::unique_ptr<fmtlog::Logger> logger{new fmtlog::Logger(filename, truncate, manageFp, flushDelay, flushBufSize)};
+    auto emplace_result = loggerCollection.emplace(filename, std::move(logger));
 
     return (*emplace_result.first).second.get();
   }
@@ -566,7 +566,7 @@ void fmtlogT<_>::setLogFile(FILE* fp, bool manageFp) {}
 
 template <int _>
 fmtlogT<_>::Logger* fmtlogT<_>::getLogger(const char* filename, bool truncate, bool manageFp, int64_t flushDelay,
-                              uint32_t flushBufSize) {
+                                          uint32_t flushBufSize) {
   return fmtlogDetailWrapper<>::impl.getLogger(filename, truncate, manageFp, flushDelay, flushBufSize);
 }
 
@@ -579,8 +579,7 @@ void fmtlogT<_>::flushOn(LogLevel flushLogLevel) FMT_NOEXCEPT {
 }
 
 template <int _>
-void fmtlogT<_>::setFlushBufSize(uint32_t bytes) FMT_NOEXCEPT {
-}
+void fmtlogT<_>::setFlushBufSize(uint32_t bytes) FMT_NOEXCEPT {}
 
 template <int _>
 void fmtlogT<_>::closeLogFile() FMT_NOEXCEPT {

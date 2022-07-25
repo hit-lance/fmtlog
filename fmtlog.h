@@ -116,10 +116,16 @@ class fmtlogT {
 
    private:
     Logger(const char* filename, bool truncate = false) : name(filename) {
-      fp = fopen(filename, truncate ? "w" : "a");
-      if (!fp) {
-        std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
-        fmt::detail::throw_format_error(err.c_str());
+      if (!strcmp(filename, "stdout")) {
+        fp = stdout;
+      } else if (!strcmp(filename, "stderr")) {
+        fp = stderr;
+      } else {
+        fp = fopen(filename, truncate ? "w" : "a");
+        if (!fp) {
+          std::string err = fmt::format("Unable to open file: {}: {}", filename, strerror(errno));
+          fmt::detail::throw_format_error(err.c_str());
+        }
       }
     }
 

@@ -126,6 +126,10 @@ class fmtlogDetailT {
     bgLogInfos.emplace_back(nullptr, nullptr, fmtlog::ERR, nullptr, fmt::string_view());
     threadBuffers.reserve(8);
     bgThreadBuffers.reserve(8);
+
+    std::unique_ptr<fmtlog::Logger> l1{new fmtlog::Logger("stdout")}, l2{new fmtlog::Logger("stderr")};
+    loggerCollection.emplace("stdout", std::move(l1));
+    loggerCollection.emplace("stderr", std::move(l2));
   }
 
   ~fmtlogDetailT() {

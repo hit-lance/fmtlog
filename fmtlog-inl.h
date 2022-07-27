@@ -365,6 +365,8 @@ class fmtlogDetailT {
     if (!info.formatToFn) {  // log once
       info.location = *(const char**)data;
       data += 8;
+      info.logger = *(fmtlog::Logger**)data;
+      data += 8;
       info.processLocation();
     }
     int64_t ts = fmtlogWrapper<>::impl.tscns.tsc2ns(tsc);

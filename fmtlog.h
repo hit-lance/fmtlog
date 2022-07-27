@@ -684,11 +684,12 @@ class fmtlogT {
   }
 
   template <typename... Args>
-  inline void logOnce(const char* location, LogLevel level, fmt::format_string<Args...> format, Args&&... args) {
+  inline void logOnce(const char* location, LogLevel level, Logger* logger, fmt::format_string<Args...> format,
+                      Args&&... args) {
     fmt::string_view sv(format);
     auto&& fmt_args = fmt::make_format_args(args...);
     uint32_t fmt_size = formatted_size(sv, fmt_args);
-    uint32_t alloc_size = 8 + 8 + fmt_size;
+    uint32_t alloc_size = 8 + 8 + 8 + fmt_size;
     bool q_full_cb = true;
     do {
       if (auto header = allocMsg(alloc_size, q_full_cb)) {
@@ -697,6 +698,8 @@ class fmtlogT {
         *(int64_t*)out = tscns.rdtsc();
         out += 8;
         *(const char**)out = location;
+        out += 8;
+        *(Logger**)out = logger;
         out += 8;
         vformat_to(out, sv, fmt_args);
         header->push(alloc_size);
@@ -763,16 +766,16 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
     fmtlogWrapper<>::impl.log(logId, tsc, __FMTLOG_LOCATION, level, fp, format, ##__VA_ARGS__); \
   } while (0)
 
-#define FMTLOG_ONCE(level, format, ...)                                             \
-  do {                                                                              \
-    if (!fmtlog::checkLogLevel(level)) break;                                       \
-    fmtlogWrapper<>::impl.logOnce(__FMTLOG_LOCATION, level, format, ##__VA_ARGS__); \
+#define FMTLOG_ONCE(level, logger, format, ...)                                             \
+  do {                                                                                      \
+    if (!fmtlog::checkLogLevel(level)) break;                                               \
+    fmtlogWrapper<>::impl.logOnce(__FMTLOG_LOCATION, level, logger, format, ##__VA_ARGS__); \
   } while (0)
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_DBG
-#define logd(logger, format, ...) FMTLOG(logger, fmtlog::DBG, format, ##__VA_ARGS__)
-#define logdo(format, ...) FMTLOG_ONCE(fmtlog::DBG, format, ##__VA_ARGS__)
-#define logdl(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::DBG, format, ##__VA_ARGS__)
+#define logd(logger, format, ...) FMTLOG(fmtlog::DBG, logger, format, ##__VA_ARGS__)
+#define logdo(logger, format, ...) FMTLOG_ONCE(fmtlog::DBG, logger, format, ##__VA_ARGS__)
+#define logdl(logger, min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::DBG, logger, format, ##__VA_ARGS__)
 #else
 #define logd(logger, format, ...) (void)0
 #define logdo(format, ...) (void)0
@@ -781,8 +784,8 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_INF
 #define logi(logger, format, ...) FMTLOG(fmtlog::INF, logger, format, ##__VA_ARGS__)
-#define logio(format, ...) FMTLOG_ONCE(fmtlog::INF, format, ##__VA_ARGS__)
-#define logil(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::INF, format, ##__VA_ARGS__)
+#define logio(logger, format, ...) FMTLOG_ONCE(fmtlog::INF, logger, format, ##__VA_ARGS__)
+#define logil(logger, min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::INF, logger, format, ##__VA_ARGS__)
 #else
 #define logi(logger, format, ...) (void)0
 #define logio(format, ...) (void)0
@@ -791,18 +794,18 @@ inline bool fmtlogT<_>::checkLogLevel(LogLevel logLevel) FMT_NOEXCEPT {
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_WRN
 #define logw(logger, format, ...) FMTLOG(fmtlog::WRN, logger, format, ##__VA_ARGS__)
-#define logwo(format, ...) FMTLOG_ONCE(fmtlog::WRN, format, ##__VA_ARGS__)
-#define logwl(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::WRN, format, ##__VA_ARGS__)
+#define logwo(logger, format, ...) FMTLOG_ONCE(fmtlog::WRN, logger, format, ##__VA_ARGS__)
+#define logwl(logger, min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::WRN, logger, format, ##__VA_ARGS__)
 #else
-#define logw(format, ...) (void)0
+#define logw(logger, format, ...) (void)0
 #define logwo(format, ...) (void)0
 #define logwl(min_interval, format, ...) (void)0
 #endif
 
 #if FMTLOG_ACTIVE_LEVEL <= FMTLOG_LEVEL_ERR
 #define loge(logger, format, ...) FMTLOG(fmtlog::ERR, logger, format, ##__VA_ARGS__)
-#define logeo(format, ...) FMTLOG_ONCE(fmtlog::ERR, format, ##__VA_ARGS__)
-#define logel(min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::ERR, format, ##__VA_ARGS__)
+#define logeo(logger, format, ...) FMTLOG_ONCE(fmtlog::ERR, logger, format, ##__VA_ARGS__)
+#define logel(logger, min_interval, format, ...) FMTLOG_LIMIT(min_interval, fmtlog::ERR, logger, format, ##__VA_ARGS__)
 #else
 #define loge(logger, format, ...) (void)0
 #define logeo(format, ...) (void)0
